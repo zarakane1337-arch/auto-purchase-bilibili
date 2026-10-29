@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会员购 · 自动抢票</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>会员购 · 自动抢票</div>
+  <div class="chips">
+    <span class="chip" id="chip-account">未登录</span>
+    <span class="chip" id="chip-ntp">对时 —</span>
+    <span class="chip mono" id="chip-clock">--:--:--</span>
+  </div>
+</header>
+
+<main>
+  <!-- 左列：配置 -->
+  <div class="col">
+
+    <section class="card">
+      <h2><i>1</i>账号</h2>
+      <div id="account-offline">
+        <div class="row">
+          <button class="btn primary" id="btn-browser-login">一键打开浏览器登录</button>
+          <button class="btn ghost" id="btn-browser-cancel" style="display:none">取消</button>
+          <span class="muted" id="browser-hint">自动抓取 Cookie，不用手工复制</span>
+        </div>
+        <div id="browser-progress" class="browser-progress hidden">
+          <span class="dot"></span><span id="browser-progress-text">正在启动浏览器…</span>
+        </div>
+        <details id="manual-cookie">
+          <summary>或者手动粘贴 Cookie</summary>
+          <textarea id="cookie-input" spellcheck="false"
+            placeholder="粘贴浏览器里的 Cookie 整行，例如：&#10;SESSDATA=xxxx; bili_jct=xxxx; DedeUserID=xxxx; ..."></textarea>
+          <div class="row">
+            <button class="btn primary" id="btn-cookie">验证并登录</button>
+            <span class="muted" id="cookie-hint">必须包含 SESSDATA 与 bili_jct</span>
+          </div>
+        </details>
+      </div>
+      <div id="account-online" class="hidden">
+        <div class="row user-row">
+          <img class="avatar" id="user-face" alt="">
+          <div class="grow">
+            <div class="user-name" id="user-name">—</div>
+            <div class="muted" id="user-mid"></div>
+          </div>
+          <button class="btn ghost" id="btn-logout">退出</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><i>2</i>场次与票档</h2>
+      <div class="row">
+        <input id="url-input" spellcheck="false"
+          placeholder="https://show.bilibili.com/platform/detail.html?id=xxxxxx">
+        <button class="btn primary" id="btn-parse">解析</button>
+      </div>
+      <div id="project-box" class="hidden">
+        <div class="proj-title" id="proj-name"></div>
+        <div class="proj-meta" id="proj-meta"></div>
+        <div class="grid2">
+          <label>场次<select id="screen-select"></select></label>
+          <label>票档<select id="sku-select"></select></label>
+        </div>
+        <div class="kv" id="sku-meta"></div>
+      </div>
+      <p class="hint">支持 detail.html?id=、mall 链接、小程序分享链接，也可以直接填项目 ID。</p>
+    </section>
+
+    <section class="card">
+      <h2><i>3</i>实名观演人</h2>
+      <div class="row">
+        <button class="btn ghost" id="btn-buyers">从账号同步实名</button>
+        <span class="muted" id="buyer-hint">同步后可一键填入</span>
+      </div>
+      <div id="buyer-select-wrap" class="hidden">
+        <label>账号内已保存的观演人<select id="buyer-select"></select></label>
+      </div>
+      <div class="grid2">
+        <label>姓名<input id="buyer-name" autocomplete="off"></label>
+        <label>手机号<input id="buyer-tel" autocomplete="off"></label>
+        <label class="span2">身份证号<input id="buyer-id" autocomplete="off"></label>
+        <label>购买数量<input id="buyer-count" type="number" min="1" max="6" value="1"></label>
+        <label>票种
+          <select id="deliver">
+            <option value="electronic">电子票</option>
+            <option value="express">纸质票（邮寄）</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><i>4</i>抢票模式</h2>
+      <div class="tabs" id="mode-tabs">
+        <button data-mode="timed" class="active">定时开抢</button>
+        <button data-mode="now">立刻开抢</button>
+        <button data-mode="monitor">蹲票</button>
+      </div>
+
+      <div class="pane" data-pane="timed">
+        <label>开抢时间（本机时区）
+          <input type="datetime-local" id="target-time" step="1">
+        </label>
+        <div class="row quick">
+          <button class="btn tiny" data-plus="60">+1 分</button>
+          <button class="btn tiny" data-plus="300">+5 分</button>
+          <button class="btn tiny" data-plus="600">+10 分</button>
+          <button class="btn tiny" data-plus="1800">+30 分</button>
+          <button class="btn tiny" data-plus="3600">+1 时</button>
+        </div>
+        <p class="hint" id="target-hint">到点前会自动对时并预热连接，倒数结束后并发下单。</p>
+      </div>
+
+      <div class="pane hidden" data-pane="now">
+        <p class="hint">立即开始并发下单，适合已经在售的场景。</p>
+      </div>
+
+      <div class="pane hidden" data-pane="monitor">
+        <p class="hint">持续轮询库存，一旦有票立即下单；适合回流票、捡漏。</p>
+      </div>
+
+      <div class="grid2 opts">
+        <label>并发线程<input type="number" id="opt-concurrency" min="1" max="5" value="2"></label>
+        <label>重试间隔 ms<input type="number" id="opt-retry" min="0" max="2000" step="10" value="120"></label>
+        <label>预热提前 ms<input type="number" id="opt-lead" min="0" max="10000" step="100" value="1500"></label>
+        <label>最长抢票 秒<input type="number" id="opt-max" min="10" max="3600" step="10" value="300"></label>
+        <label class="span2 monitor-only hidden">蹲票轮询 ms<input type="number" id="opt-monitor" min="200" max="5000" step="100" value="800"></label>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- 右列：运行 -->
+  <div class="col">
+    <section class="card run">
+      <h2>运行状态</h2>
+      <div class="status-box">
+        <div class="status-line">
+          <span class="badge idle" id="run-badge">空闲</span>
+          <span class="grow" id="run-detail">尚未开始</span>
+        </div>
+        <div class="countdown mono" id="countdown">--:--:--</div>
+        <div class="muted" id="run-meta">开抢时间 —</div>
+        <div class="progress"><div class="bar" id="progress-bar"></div></div>
+      </div>
+      <div class="row">
+        <button class="btn primary big grow" id="btn-start">开始抢票</button>
+        <button class="btn danger big grow hidden" id="btn-stop">停止</button>
+      </div>
+      <div id="result" class="result hidden"></div>
+      <h3>实时日志</h3>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>
