@@ -269,3 +269,18 @@ details#manual-cookie > summary:hover { color: var(--text); }
 .browser-progress.err { background: rgba(255, 92, 92, .1); border-color: rgba(255, 92, 92, .4); }
 .browser-progress.err .dot { background: #ff5c5c; animation: none; }
 @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+/* 页脚免责声明 */
+.disclaimer {
+  max-width: 1180px;
+  margin: 8px auto 28px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+.disclaimer strong { color: var(--amber); font-weight: 600; }

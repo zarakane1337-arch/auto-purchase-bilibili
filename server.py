@@ -369,6 +369,9 @@ def main() -> None:
     print(" 地址：%s" % url)
     print(" 数据：%s" % os.path.join(DATA_DIR, "state.json"))
     print(" 停止：Ctrl + C")
+    print("-" * 56)
+    print(" 本程序仅供学习参考使用，不得用于商业用途或实际抢票。")
+    print(" 与 bilibili 官方无任何关联。后果由使用者自行承担。")
     print("=" * 56, flush=True)
 
     if not args.no_browser:
