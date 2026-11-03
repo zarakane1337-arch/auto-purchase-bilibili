@@ -14,6 +14,7 @@ import time
 import uuid
 
 from .bili import (
+    ENCODE,
     BiliError,
     MAX_BUYERS,
     build_buyer_info,
@@ -136,7 +137,7 @@ class Engine:
         cfg["count"] = len(buyers)
         cfg.setdefault("concurrency", 2)
         cfg["concurrency"] = max(1, min(5, int(cfg["concurrency"])))
-        cfg.setdefault("retry_ms", 120)
+        cfg.setdefault("retry_ms", 800)
         cfg.setdefault("lead_ms", 1500)
         cfg.setdefault("monitor_ms", 800)
         cfg.setdefault("max_seconds", {"timed": 300, "now": 120, "monitor": 1800}[mode])
@@ -238,13 +239,20 @@ class Engine:
             di = ctx["deliver_info"]
             name = str(di.get("name") or "").strip()
             tel = str(di.get("tel") or "").strip()
+            # 联系人没填时回落到第一位观演人（nomask 列表里带真实姓名/手机号）。
+            if not name:
+                name = str(buyers[0].get("name") or "").strip()
+                di["name"] = name
+            if not tel:
+                tel = str(buyers[0].get("tel") or "").strip()
+                di["tel"] = tel
             if not name:
                 raise RuntimeError("下单需要联系人信息：请填写联系人姓名（电子票也要）")
             if "*" in tel:
                 raise RuntimeError("联系人手机号是打码的（%s），请在「联系人手机号」填真实号码" % tel)
             if not re.fullmatch(r"1\d{10}", tel.replace("-", "").replace(" ", "")):
                 raise RuntimeError("联系人手机号格式不对：%s（需要 11 位手机号）" % (tel or "空"))
-            log("联系人：%s %s" % (name, tel))
+            log("联系人：%s %s（请求编码 %s）" % (name, tel, ENCODE))
 
             mode = cfg["mode"]
             if mode == "timed":
@@ -391,7 +399,7 @@ class Engine:
         price = ctx["price"]
         deliver_info = ctx["deliver_info"]
         extra = cfg.get("extra_fields") or {}
-        retry_s = max(0, int(cfg.get("retry_ms", 120))) / 1000.0
+        retry_s = max(0, int(cfg.get("retry_ms", 300))) / 1000.0
         # 单轮开抢的窗口，与整场任务的 max_seconds 分开：
         # 蹲票模式一轮抢不到要能回到轮询，不能被单轮吃满整个蹲票窗口。
         fire_seconds = max(1, int(cfg.get("fire_seconds", 60)))
@@ -401,6 +409,20 @@ class Engine:
         winner = threading.Event()
         fatal = threading.Event()
         counters = {"ok": 0, "fail": 0}
+
+        def backoff(code, msg):
+            """风控/限流码按指数退避（1s→2s→4s→8s→10s 封顶），普通失败按 retry_s。
+
+            -412、900001 拥堵、80110374 service error 都是站点侧限流，
+            按 retry_s 连撞只会把冷却时间越撞越长。
+            """
+            s = (str(code) + " " + str(msg)).lower()
+            risky = ("412" in s or "拥堵" in s or "900001" in s or "352" in s
+                     or "80110374" in s or "service error" in s)
+            if not risky:
+                return retry_s
+            counters["risk"] = counters.get("risk", 0) + 1
+            return min(10.0, 1.0 * (2 ** min(counters["risk"] - 1, 4)))
         lock = threading.Lock()
         order_lock = threading.Lock()
 
@@ -411,13 +433,18 @@ class Engine:
             "；".join("%s(id=%s)" % (b.get("name"), b.get("id")) for b in buyer_info),
         ), "info")
 
-        def worker(idx: int) -> None:
+        def worker_body(idx: int) -> None:
             while not task.stop_flag.is_set() and not winner.is_set() and not fatal.is_set():
                 if time.time() > deadline:
                     return
                 try:
                     prep = cli.prepare(pid, sid, sku_id, count, extra=extra)
                     token = str(prep.get("token") or prep.get("prepare_token") or "")
+                    with lock:
+                        counters["dbg"] = counters.get("dbg", 0) + 1
+                        dbg = counters["dbg"]
+                    if dbg <= 3:
+                        log("prepare 返回：token=%r keys=%s" % (token[:12], list(prep)[:8]), "info")
                 except BiliError as exc:
                     kind = classify_error(exc.code, exc.msg)
                     with lock:
@@ -427,7 +454,13 @@ class Engine:
                         log("prepare 终止：%s" % exc.msg, "error")
                         fatal.set()
                         return
-                    time.sleep(retry_s)
+                    with lock:
+                        counters["fail"] += 1
+                        nf = counters["fail"]
+                    task.last_error = exc.msg
+                    if nf <= 3 or nf % 20 == 0:
+                        log("第 %d 次 prepare 失败：%s（%s）" % (nf, exc.msg, exc.code), "warn")
+                    time.sleep(backoff(exc.code, exc.msg))
                     continue
                 except Exception as exc:
                     with lock:
@@ -465,12 +498,16 @@ class Engine:
                 if cerr is not None:
                     with lock:
                         task.attempts += 1
+                        counters["fail"] += 1
+                        nf = counters["fail"]
                     task.last_error = cerr.msg
                     if classify_error(cerr.code, cerr.msg) in ("auth", "buyer", "limit", "closed"):
                         log("下单终止：%s" % cerr.msg, "error")
                         fatal.set()
                         return
-                    time.sleep(retry_s)
+                    if nf <= 3 or nf % 20 == 0:
+                        log("第 %d 次请求异常：%s（%s）" % (nf, cerr.msg, cerr.code), "warn")
+                    time.sleep(backoff(cerr.code, cerr.msg))
                     continue
 
                 with lock:
@@ -518,6 +555,17 @@ class Engine:
                 if counters["fail"] <= 3 or counters["fail"] % 20 == 0:
                     log("第 %d 次未成功：%s（返回 %s）" % (counters["fail"], task.last_error, str(res)[:300]), "warn")
                 time.sleep(retry_s)
+
+        def worker(idx: int) -> None:
+            # worker 里任何未捕获异常都会让线程悄悄死掉、任务像卡住一样空转到超时，
+            # 所以兜底记一条并终止整轮。
+            try:
+                worker_body(idx)
+            except Exception as exc:  # noqa: BLE001
+                with lock:
+                    task.last_error = "worker 异常：%s: %s" % (type(exc).__name__, exc)
+                log("worker 异常：%s: %s" % (type(exc).__name__, exc), "error")
+                fatal.set()
 
         threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(concurrency)]
         for t in threads:

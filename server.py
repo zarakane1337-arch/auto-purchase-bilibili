@@ -142,6 +142,52 @@ def api_buyers(h, m, q):
     h.json(200, {"ok": True, "list": lst})
 
 
+def api_probe(h, m, q):
+    """单次 prepare 探针：只验能不能拿到 token，不产生订单。"""
+    pid = int((q.get("project_id") or ["0"])[0])
+    sid = int((q.get("screen_id") or ["0"])[0])
+    sku = int((q.get("sku_id") or ["0"])[0])
+    if not (pid and sku):
+        raise ValueError("缺少 project_id 或 sku_id")
+    try:
+        prep = CLIENT.prepare(pid, sid, sku, 1)
+        h.json(200, {"ok": True, "token": bool(prep.get("token")), "raw_keys": list(prep)[:8]})
+    except BiliError as exc:
+        h.json(200, {"ok": False, "code": exc.code, "msg": exc.msg})
+
+
+def api_diagnose(h, m, q):
+    """项目状态体检：直接回答「到底是在售、售罄，还是被限流」。"""
+    pid = int((q.get("project_id") or ["0"])[0])
+    if not pid:
+        raise ValueError("缺少 project_id")
+    norm = CLIENT.project_normalized(pid)
+    screens = [{
+        "id": s.get("id"),
+        "name": s.get("name"),
+        "sale_start": s.get("sale_start"),
+        "sale_end": s.get("sale_end"),
+        "sale_flag": s.get("sale_flag"),
+        "clickable": s.get("clickable"),
+        "tickets": [{
+            "id": t.get("id"), "name": t.get("name"), "price": t.get("price"),
+            "stock": t.get("stock"), "limit": t.get("limit"),
+        } for t in (s.get("tickets") or [])],
+    } for s in (norm.get("screens") or [])]
+    h.json(200, {
+        "ok": True,
+        "name": norm.get("name"),
+        "sale_start": norm.get("sale_start"),
+        "sale_end": norm.get("sale_end"),
+        "need_contact": norm.get("need_contact"),
+        "pick_seat": norm.get("pick_seat"),
+        "screens": screens,
+        "skus": [{"id": t.get("id"), "name": t.get("name"), "price": t.get("price"),
+                  "stock": t.get("stock"), "limit": t.get("limit")} for t in (norm.get("skus") or [])],
+        "server_now": int(CLIENT.ts.server_now() * 1000),
+    })
+
+
 def api_ntp(h, m, q):
     try:
         CLIENT.ts.sync(rounds=5)
@@ -320,6 +366,8 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", re.compile(r"/api/roster"), api_roster),
         ("POST", re.compile(r"/api/roster"), api_roster_save),
         ("GET", re.compile(r"/api/ntp"), api_ntp),
+        ("GET", re.compile(r"/api/diagnose"), api_diagnose),
+        ("GET", re.compile(r"/api/probe"), api_probe),
         ("POST", re.compile(r"/api/task"), api_task_start),
         ("POST", re.compile(r"/api/task/stop"), api_task_stop),
         ("GET", re.compile(r"/api/tasks"), api_tasks),

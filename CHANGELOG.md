@@ -26,10 +26,19 @@
 
 ### 修复
 
+- **createV2 `209001` 根因修复**：下单请求必须带 `newRisk=true`、`requestSource=neul-next`、`clickPosition`、`deviceId`，`timestamp` 取当前时间 +5s，并额外提交顶层 `buyer`（观演人 id）与 `tel`（观演人手机号）作为联系人；缺这些字段时服务端一律回 `209001 本项目需要联系人信息`，与 `deliver_info` 无关
+- `buyer_info` / `deliver_info` 恢复为 **JSON 字符串**提交（传对象会触发 `80110374 service error` 绑定错误，这也是之前试改后报 service error 的原因）
+- `buyer/list` 改为 `channel=3&nomask=1`：直接返回完整身份证号与手机号，不再只拿打码值；观演人按 id 选中后自动补全姓名 / 手机号 / 证件号
+- 联系人姓名 / 手机号缺失或打码时，自动回落第一位观演人（nomask 数据），不再强制手填
 - 电子票 `deliver_info` 传空串导致 createV2 报「本项目需要联系人信息，请填写姓名及手机号」：现在联系人姓名/手机号随单提交（`addr_name`/`addr_tel` 优先，回落第一位观演人）；缺失时启动阶段直接报错，不再空转重试
 - 前端新增「联系人姓名 / 联系人手机号」，勾选观演人时自动回填（列表里带手机号才回填），邮寄模式兼作收货人
 - 联系人改为强校验：姓名必填、手机号需 11 位、打码号码（含 `*`）直接拒绝并提示填真实号码
 - 日志增加「下单参数」（count / deliver_info / buyer_info）与前 3 次失败的服务端原始返回，便于对照接口报错
+- 下单请求编码可切换：`BILI_ENCODE=jsonobj|json|form`（默认 `json`），启动日志打印「请求编码 …」，用于对照服务端到底吃哪种 body
+- 下单接口编码试改：曾把 prepare / createV2 / pay 改为表单提交，实测被 WAF 拦成 `-412`（JSON 请求能进业务层），已回退为 JSON；`httpc.post` 保留 `form` 开关备用
+- 修复观演人自动回填：列表里的手机号/身份证带 `*` 打码，不再写入输入框，避免把打码值当真实号码提交；身份证框改为提示「手填需完整 18 位」
+- `-412` 风控冷却：prepare/create 命中 412 时退避 2s，不再按 retry 间隔连撞
+- 修复静默重试：prepare 失败、createV2 请求异常、worker 线程未捕获异常现在都会落日志（此前只累加计数，表现为「打印完下单参数就没动静」）；prepare 返回非 JSON 时带上 HTTP 状态与响应片段
 
 ### 计划中
 

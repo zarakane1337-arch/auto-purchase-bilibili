@@ -430,14 +430,27 @@
     try { await post('/api/roster', { roster: STATE.roster }); } catch (e) { /* 静默 */ }
   }
 
+  // 观演人列表里的手机号/身份证是打码的（含 *），打码值不能回填到输入框，
+  // 否则会被当成真实号码提交，后端校验直接拒绝。
+  function realVal(v) {
+    const s = String(v || '').trim();
+    return s && s.indexOf('*') < 0 ? s : '';
+  }
+
   function applyBuyer(id) {
     const b = STATE.buyers.find((x) => String(x.id) === String(id));
     if (!b) return;
-    $('buyer-name').value = b.name || '';
-    $('buyer-tel').value = b.tel || '';
-    $('buyer-id').value = b.personal_id || '';
-    if (!$('contact-name').value.trim() && b.name) $('contact-name').value = b.name;
-    if (!$('contact-tel').value.trim() && b.tel) $('contact-tel').value = b.tel;
+    const name = realVal(b.name);
+    const tel = realVal(b.tel);
+    const pid = realVal(b.personal_id);
+    $('buyer-name').value = name;
+    $('buyer-tel').value = tel;
+    $('buyer-id').value = pid;
+    $('buyer-id').placeholder = pid
+      ? '选填：勾选观演人后按 ID 下单'
+      : '接口返回的身份证已打码，走手填时请填完整 18 位号码';
+    if (!$('contact-name').value.trim() && name) $('contact-name').value = name;
+    if (!$('contact-tel').value.trim() && tel) $('contact-tel').value = tel;
   }
 
   /* ---------------- 模式 ---------------- */

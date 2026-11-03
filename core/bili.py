@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from urllib.parse import quote
 
@@ -23,6 +24,12 @@ API_HOST = "api.bilibili.com"
 
 REFERER_HOME = "https://show.bilibili.com/"
 REFERER_DETAIL = "https://show.bilibili.com/platform/detail.html?id=%s"
+
+# 下单接口的请求体编码。浏览器走 form-urlencoded；但本机 HTTP 客户端发 form
+# 可能被网关判成非浏览器请求（-412），默认用 JSON 提交。
+#   json / jsonobj：application/json，buyer_info / deliver_info 为嵌套对象；
+#   form          ：application/x-www-form-urlencoded，这两字段为 JSON 字符串（浏览器原生）。
+ENCODE = os.environ.get("BILI_ENCODE", "json").strip().lower()
 
 
 class BiliError(Exception):
@@ -369,7 +376,10 @@ class BiliClient:
         try:
             resp = self.show.get(
                 path,
-                params={"project_id": project_id},
+                # channel=3 + nomask=1：拿完整身份证号和手机号。
+                # 不带这两个参数时接口只回打码值（4401**********1234），
+                # 打码值既不能下单，也填不进联系人。
+                params={"project_id": project_id, "channel": 3, "nomask": 1},
                 headers=self._headers(REFERER_DETAIL % project_id),
             )
         except Exception as exc:
@@ -402,14 +412,21 @@ class BiliClient:
         id_type = _int(buyer.get("id_type", 0))
         info = {"name": name, "tel": tel, "personal_id": pid, "id_type": id_type, "id": 0}
 
-        if buyer.get("id"):
-            info["id"] = _int(buyer["id"])
-            return info
-
         try:
             lst = self.buyer_list(project_id)
         except BiliError:
             lst = []
+
+        # 只给了观演人 id（roster 里存的就是 id）：从 nomask 列表补全姓名/手机号/证件号
+        if buyer.get("id"):
+            info["id"] = _int(buyer["id"])
+            for b in lst:
+                if _int(b.get("id")) == info["id"]:
+                    info["name"] = name or b.get("name", "")
+                    info["tel"] = tel or b.get("tel", "")
+                    info["personal_id"] = pid or str(b.get("personal_id") or "")
+                    return info
+            return info
 
         for b in lst:
             if pid and _id_match(pid, str(b.get("personal_id") or "")):
@@ -437,12 +454,34 @@ class BiliClient:
         return out
 
     # ---------- 下单 ----------
+    def _order_post(self, path: str, body: dict, project_id, extra_params: dict | None = None):
+        """按 ENCODE 选择 form/JSON 提交；form 模式下补 csrf。"""
+        params = {"project_id": project_id}
+        if extra_params:
+            params.update(extra_params)
+        if ENCODE in ("json", "jsonobj"):
+            return self.show.post(path, params=params, body=body,
+                                  headers=self._headers(REFERER_DETAIL % project_id))
+        payload = dict(body)
+        ck = self.csrf()
+        if ck:
+            payload["csrf"] = ck
+        return self.show.post(path, params=params, body=payload,
+                              headers=self._headers(REFERER_DETAIL % project_id),
+                              form=True)
+
     def _ts_ms(self) -> int:
         """时间戳用校准后的服务器时间，避免本机钟差把请求打早/打晚。"""
         try:
             return int(self.ts.server_now() * 1000)
         except Exception:
             return now_ms()
+
+    @staticmethod
+    def _click_position(now_ms_value: int) -> dict:
+        """模拟浏览器里的「点按」事件，坐标落在常见屏幕右侧按钮区。"""
+        origin = now_ms_value - 8000
+        return {"x": 1325, "y": 885, "origin": origin, "now": now_ms_value}
 
     def prepare(self, project_id: int, screen_id: int, sku_id: int, count: int = 1,
                 order_type: int = 1, extra: dict | None = None) -> dict:
@@ -457,15 +496,12 @@ class BiliClient:
         if extra:
             body.update(extra)
         try:
-            resp = self.show.post(
-                "/api/ticket/order/prepare",
-                params={"project_id": project_id},
-                body=body,
-                headers=self._headers(REFERER_DETAIL % project_id),
-            )
+            resp = self._order_post("/api/ticket/order/prepare", body, project_id)
         except Exception as exc:
             raise BiliError(-1, "prepare 网络异常：%s" % exc) from exc
-        data = resp.json() or {}
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise BiliError(-1, "prepare 返回非 JSON（HTTP %s）：%s" % (resp.status, resp.text()[:120]))
         code = data.get("errno", data.get("code", 0))
         if code not in (0, "0"):
             raise BiliError(code, str(data.get("msg") or "prepare 失败"), data)
@@ -474,6 +510,8 @@ class BiliClient:
     def create_order(self, project_id: int, screen_id: int, sku_id: int, count: int,
                      price: int, buyer_info: list, deliver_info: dict, token: str,
                      order_type: int = 1, again: int = 1, extra: dict | None = None) -> dict:
+        first = (buyer_info or [{}])[0] if isinstance(buyer_info, list) else {}
+        now = self._ts_ms()
         body = {
             "project_id": _int(project_id),
             "screen_id": _int(screen_id),
@@ -481,20 +519,35 @@ class BiliClient:
             "count": _int(count, 1),
             "pay_money": _int(price) * _int(count, 1),
             "order_type": _int(order_type, 1),
-            "buyer_info": json.dumps(buyer_info, ensure_ascii=False, separators=(",", ":")),
-            "deliver_info": json.dumps(deliver_info, ensure_ascii=False, separators=(",", ":")),
             "again": _int(again, 1),
             "token": token,
-            "timestamp": self._ts_ms(),
+            # 服务端要求提交时间略晚于 now（浏览器点按时刻），提前会被风控盯上。
+            "timestamp": now + 5000,
+            # 新下单链路的风控字段：缺 newRisk / requestSource / clickPosition
+            # 时会直接回 209001「本项目需要联系人信息」，与联系人本身无关。
+            "deviceId": "",
+            "newRisk": "true",
+            "requestSource": "neul-next",
+            "clickPosition": self._click_position(now),
+            # 联系人（姓名/手机号）同时放在顶层 buyer / tel，
+            # 电子票也走这两个字段校验；deliver_info 只管邮寄地址。
+            "buyer": str(first.get("id") or ""),
+            "tel": str(first.get("tel") or ""),
         }
         if extra:
             body.update(extra)
+        # buyer_info / deliver_info 在 JSON 体里也必须序列化成字符串：
+        # 传对象会被网关判成绑定错误（80110374 service error）。
+        body["buyer_info"] = json.dumps(buyer_info, ensure_ascii=False, separators=(",", ":"))
+        body["deliver_info"] = json.dumps(deliver_info, ensure_ascii=False, separators=(",", ":"))
+        if ENCODE == "jsonobj":
+            # 仅用于排查：老 jsonobj 模式把这两个字段还原成对象。
+            body["buyer_info"] = buyer_info
+            body["deliver_info"] = deliver_info
         try:
-            resp = self.show.post(
-                "/api/ticket/order/createV2",
-                params={"project_id": project_id, "screen_id": screen_id, "sku_id": sku_id},
-                body=body,
-                headers=self._headers(REFERER_DETAIL % project_id),
+            resp = self._order_post(
+                "/api/ticket/order/createV2", body, project_id,
+                {"screen_id": screen_id, "sku_id": sku_id},
             )
         except Exception as exc:
             raise BiliError(-1, "createV2 网络异常：%s" % exc) from exc
@@ -515,12 +568,7 @@ class BiliClient:
         if ck:
             body["csrf"] = ck
         try:
-            resp = self.show.post(
-                "/api/ticket/order/pay",
-                params={"project_id": project_id},
-                body=body,
-                headers=self._headers(REFERER_DETAIL % project_id),
-            )
+            resp = self._order_post("/api/ticket/order/pay", body, project_id)
         except Exception as exc:
             raise BiliError(-1, "支付参数获取失败：%s" % exc) from exc
         return resp.json() or {}

@@ -159,13 +159,23 @@ class HostClient:
     def get(self, path, params=None, headers=None, timeout=None) -> Resp:
         return self.request("GET", path, params=params, headers=headers, timeout=timeout)
 
-    def post(self, path, body=None, params=None, headers=None, timeout=None) -> Resp:
+    def post(self, path, body=None, params=None, headers=None, timeout=None, form=False) -> Resp:
+        """form=True 时按 application/x-www-form-urlencoded 提交。
+
+        show.bilibili.com 的订单接口只认表单编码（浏览器端就是这么发的），
+        发 JSON 时服务端拿不到 deliver_info / buyer_info，会报「需要联系人信息」。
+        """
         payload = None
+        hdrs = dict(headers or {})
         if body is not None:
-            payload = body if isinstance(body, (str, bytes)) else json.dumps(
-                body, ensure_ascii=False, separators=(",", ":")
-            )
-        return self.request("POST", path, params=params, body=payload, headers=headers, timeout=timeout)
+            if isinstance(body, (str, bytes)):
+                payload = body
+            elif form:
+                payload = urlencode(body, doseq=True)
+                hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            else:
+                payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        return self.request("POST", path, params=params, body=payload, headers=hdrs or None, timeout=timeout)
 
     def prewarm(self, count: int = 4, path: str = "/") -> int:
         """提前建立 TLS 连接，减少开抢首包耗时。返回成功预热条数。"""
