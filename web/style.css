@@ -284,3 +284,22 @@ details#manual-cookie > summary:hover { color: var(--text); }
   text-align: center;
 }
 .disclaimer strong { color: var(--amber); font-weight: 600; }
+/* ---- 任务观演人（多选） ---- */
+.checks-head { justify-content: space-between; margin-bottom: 6px; }
+.checks {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 210px; overflow-y: auto;
+  margin-bottom: 12px;
+}
+.check {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; margin: 0;
+  background: #0f1117; border: 1px solid var(--line); border-radius: 10px;
+  font-size: 13px; color: var(--text); cursor: pointer;
+}
+.check:hover { border-color: rgba(251, 114, 153, .5); }
+.check input { width: auto; margin: 0; accent-color: var(--pink); }
+.check input:disabled + .check-name { opacity: .45; }
+.check-name { font-weight: 600; }
+.check-id { color: var(--muted); font-size: 12px; font-family: "Cascadia Mono", Consolas, monospace; margin-left: auto; }
+.hint.warn { color: var(--amber); }

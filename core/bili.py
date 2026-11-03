@@ -426,6 +426,16 @@ class BiliClient:
                 return info
         return info
 
+    def resolve_buyers(self, project_id: int, buyers: list) -> list:
+        """逐个匹配任务观演人；只有完全没身份可查才报错，缺 id 交给上层警告。"""
+        out = []
+        for i, b in enumerate(buyers, 1):
+            info = self.resolve_buyer(project_id, b or {})
+            if not info.get("personal_id") and not info.get("id"):
+                raise BiliError(-1, "第 %d 位观演人实名信息不完整：需要身份证号（或从账号同步观演人）" % i)
+            out.append(info)
+        return out
+
     # ---------- 下单 ----------
     def _ts_ms(self) -> int:
         """时间戳用校准后的服务器时间，避免本机钟差把请求打早/打晚。"""
@@ -529,14 +539,23 @@ def build_deliver_info(cfg: dict, buyer: dict) -> dict:
     return {"name": "", "tel": "", "addr_id": 0, "addr": "", "addr_detail": ""}
 
 
-def build_buyer_info(buyer: dict) -> list:
+MAX_BUYERS = 6
+
+
+def build_buyer_info(buyers) -> list:
+    """任务观演人 → createV2 的 buyer_info 数组（每人 1 张，整单原子）。
+
+    兼容单个 dict：只有一位观演人时直接传 dict 也可以。
+    """
+    if isinstance(buyers, dict):
+        buyers = [buyers]
     return [{
-        "id": _int(buyer.get("id", 0)),
-        "name": buyer.get("name", ""),
-        "tel": buyer.get("tel", ""),
-        "personal_id": buyer.get("personal_id", ""),
-        "id_type": _int(buyer.get("id_type", 0)),
-    }]
+        "id": _int(b.get("id", 0)),
+        "name": b.get("name", ""),
+        "tel": b.get("tel", ""),
+        "personal_id": b.get("personal_id", ""),
+        "id_type": _int(b.get("id_type", 0)),
+    } for b in buyers if isinstance(b, dict)]
 
 
 def order_pay_url(order_id) -> str:

@@ -12,11 +12,13 @@
 
   const STATE = {
     project: null,
+    sku: null,
     mode: 'timed',
     running: null,
     offsetMs: 0,
     serverRtt: 0,
     buyers: [],
+    roster: [],
     busy: false,
   };
 
@@ -296,6 +298,7 @@
     if (!p) return;
     const id = $('sku-select').value;
     const sku = (p.skus || []).find((k) => String(k.id) === String(id));
+    STATE.sku = sku || null;
     const box = $('sku-meta');
     box.innerHTML = '';
     if (!sku) return;
@@ -308,6 +311,7 @@
     if (sku.sale_flag) add(sku.sale_flag);
     if (p.sale_start) add('项目开售 ' + fmtClock(p.sale_start));
     autofillTarget(sku);
+    syncBuyerChecks();
   }
 
   /** 选中票档后，若用户没手动改过开抢时间，就用该票档真实开售时间填进去。 */
@@ -328,33 +332,97 @@
 
   /* ---------------- 实名 ---------------- */
 
+  const MAX_BUYERS = 6;
+
   async function loadBuyers() {
     if (!STATE.project) return toast('请先解析链接', 'err');
     const btn = $('btn-buyers');
     btn.disabled = true; btn.textContent = '读取中…';
     try {
-      const d = await api('/api/buyers?project_id=' + encodeURIComponent(STATE.project.project_id));
+      const pid = encodeURIComponent(STATE.project.project_id);
+      const [d, r] = await Promise.all([
+        api('/api/buyers?project_id=' + pid),
+        api('/api/roster').catch(() => ({ roster: [] })),
+      ]);
       STATE.buyers = d.list || [];
-      const sel = $('buyer-select');
-      sel.innerHTML = '';
-      if (!STATE.buyers.length) {
-        const o = el('option', null, '（账号里没有实名观演人，请手动填写）');
-        o.value = '';
-        sel.appendChild(o);
-      }
-      STATE.buyers.forEach((b) => {
-        const o = el('option', null, b.name + '  ' + (b.personal_id_masked || ''));
-        o.value = b.id;
-        sel.appendChild(o);
-      });
+      STATE.roster = (r.roster || []).map(String);
       $('buyer-select-wrap').classList.remove('hidden');
-      applyBuyer(sel.value);
+      renderBuyerChecks();
       toast('已读取 ' + STATE.buyers.length + ' 位观演人', 'ok');
     } catch (e) {
       toast(e.message, 'err');
     } finally {
       btn.disabled = false; btn.textContent = '从账号同步实名';
     }
+  }
+
+  function selectedBuyerIds() {
+    return Array.from(document.querySelectorAll('#buyer-checks input:checked')).map((n) => n.value);
+  }
+
+  function renderBuyerChecks() {
+    const box = $('buyer-checks');
+    box.innerHTML = '';
+    if (!STATE.buyers.length) {
+      box.appendChild(el('div', 'muted', '（账号里没有实名观演人，请在下面手填 1 人）'));
+    }
+    STATE.buyers.forEach((b) => {
+      const id = String(b.id);
+      const wrap = el('label', 'check');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.value = id;
+      cb.checked = STATE.roster.includes(id);
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          if (STATE.roster.length >= MAX_BUYERS) {
+            cb.checked = false;
+            return toast('一单最多 ' + MAX_BUYERS + ' 位观演人', 'err');
+          }
+          STATE.roster.push(id);
+          applyBuyer(b.id);
+        } else {
+          STATE.roster = STATE.roster.filter((x) => x !== id);
+        }
+        syncBuyerChecks();
+        persistRoster();
+      });
+      wrap.appendChild(cb);
+      wrap.appendChild(el('span', 'check-name', b.name || '未命名'));
+      wrap.appendChild(el('span', 'check-id', b.personal_id_masked || ''));
+      box.appendChild(wrap);
+    });
+    syncBuyerChecks();
+  }
+
+  function syncBuyerChecks() {
+    const picked = selectedBuyerIds();
+    const full = picked.length >= MAX_BUYERS;
+    document.querySelectorAll('#buyer-checks input').forEach((n) => {
+      n.disabled = full && !n.checked;
+    });
+    const hint = $('buyer-count-hint');
+    if (hint) hint.textContent = '已选 ' + picked.length + ' / ' + MAX_BUYERS;
+    updateLimitHint(picked.length);
+  }
+
+  function updateLimitHint(n) {
+    const box = $('buyer-limit-hint');
+    if (!box) return;
+    const msgs = [];
+    const sku = STATE.sku;
+    if (n > 1 && sku && sku.limit && n > sku.limit) {
+      msgs.push('该票档限购 ' + sku.limit + ' 张，已选 ' + n + ' 人，下单可能被拒');
+    }
+    if (n > 1 && $('deliver') && $('deliver').value === 'express') {
+      msgs.push('邮寄收货人默认取第一位观演人，可在地址栏填写覆盖');
+    }
+    box.textContent = msgs.length ? '提示：' + msgs.join('；') + '。' : '';
+    box.className = msgs.length ? 'hint warn' : 'hint';
+  }
+
+  async function persistRoster() {
+    try { await post('/api/roster', { roster: STATE.roster }); } catch (e) { /* 静默 */ }
   }
 
   function applyBuyer(id) {
@@ -393,24 +461,32 @@
     if (!skuId) throw new Error('请选择票档');
     const screenId = $('screen-select').value || (p.screens[0] && p.screens[0].id) || 0;
 
-    const name = $('buyer-name').value.trim();
-    const tel = $('buyer-tel').value.trim();
-    const pid = $('buyer-id').value.trim().toUpperCase();
-    if (!pid) throw new Error('请填写身份证号');
+    const picked = selectedBuyerIds()
+      .map((id) => STATE.buyers.find((b) => String(b.id) === id))
+      .filter(Boolean)
+      .map((b) => ({
+        id: Number(b.id),
+        name: b.name || '',
+        tel: b.tel || '',
+        personal_id: b.personal_id || '',
+        id_type: 0,
+      }));
+    let buyers = picked;
+    if (!buyers.length) {
+      const name = $('buyer-name').value.trim();
+      const tel = $('buyer-tel').value.trim();
+      const pid = $('buyer-id').value.trim().toUpperCase();
+      if (!pid) throw new Error('请勾选观演人，或手填一位的身份证号');
+      buyers = [{ id: 0, name, tel, personal_id: pid, id_type: 0 }];
+    }
+    if (buyers.length > MAX_BUYERS) throw new Error('一单最多 ' + MAX_BUYERS + ' 位观演人');
 
     const cfg = {
       mode: STATE.mode,
       project_id: p.project_id,
       screen_id: Number(screenId) || 0,
       sku_id: Number(skuId),
-      count: Math.max(1, Number($('buyer-count').value) || 1),
-      buyer: {
-        id: Number($('buyer-select').value || 0),
-        name,
-        tel,
-        personal_id: pid,
-        id_type: 0,
-      },
+      buyers,
       deliver: $('deliver').value,
       concurrency: Math.max(1, Math.min(5, Number($('opt-concurrency').value) || 2)),
       retry_ms: Math.max(0, Number($('opt-retry').value) || 0),
@@ -601,8 +677,7 @@
 
     $('url-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doParse(); });
 
-    $('buyer-select').onchange = (e) => applyBuyer(e.target.value);
-    $('buyer-id').addEventListener('input', () => { $('buyer-select').value = ''; });
+    $('deliver').addEventListener('change', () => updateLimitHint(selectedBuyerIds().length));
 
     document.querySelectorAll('#mode-tabs button').forEach((b) => {
       b.onclick = () => switchMode(b.dataset.mode);

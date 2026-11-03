@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from core.bili import BiliClient, BiliError, extract_project_id  # noqa: E402
+from core.bili import BiliClient, BiliError, MAX_BUYERS, extract_project_id  # noqa: E402
 from core.browser_login import BrowserLogin, find_browser  # noqa: E402
 from core.engine import Engine, STATUS_TEXT  # noqa: E402
 from core.store import Store  # noqa: E402
@@ -150,13 +150,49 @@ def api_ntp(h, m, q):
     h.json(200, {"ok": True, "sync": CLIENT.ts.snapshot()})
 
 
+def api_roster(h, m, q):
+    ids = STORE.get("roster") or []
+    h.json(200, {"ok": True, "roster": ids if isinstance(ids, list) else []})
+
+
+def api_roster_save(h, m, q):
+    body = h.body_json()
+    raw = body.get("roster")
+    if not isinstance(raw, list):
+        raise ValueError("roster 必须是观演人 ID 数组")
+    ids = []
+    for x in raw:
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            continue
+        if v and v not in ids:
+            ids.append(v)
+    ids = ids[:MAX_BUYERS]
+    STORE.set("roster", ids)
+    h.json(200, {"ok": True, "roster": ids})
+
+
 def api_task_start(h, m, q):
     body = h.body_json()
     cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else body
+    buyers = cfg.get("buyers")
+    if isinstance(buyers, dict):
+        buyers = [buyers]
+    if not buyers:
+        legacy = cfg.get("buyer")
+        buyers = [legacy] if isinstance(legacy, dict) else []
+    buyers = [b for b in buyers if isinstance(b, dict)]
+    if not buyers:
+        raise ValueError("请至少选择一位观演人")
+    if len(buyers) > MAX_BUYERS:
+        raise ValueError("单订单最多 %d 位观演人" % MAX_BUYERS)
+    cfg["buyers"] = buyers
+    cfg.pop("buyer", None)
     task = ENGINE.start(cfg)
     ENGINE.cleanup()
-    log_console("任务启动 %s mode=%s target=%s" % (
-        task.id, task.cfg.get("mode"), fmt_time(task.cfg.get("target_ms"))))
+    log_console("任务启动 %s mode=%s 观演人=%d" % (
+        task.id, task.cfg.get("mode"), len(task.cfg.get("buyers") or [])))
     h.json(200, {"ok": True, "task": task.public()})
 
 
@@ -281,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         ("POST", re.compile(r"/api/logout"), api_logout),
         ("POST", re.compile(r"/api/parse"), api_parse),
         ("GET", re.compile(r"/api/buyers"), api_buyers),
+        ("GET", re.compile(r"/api/roster"), api_roster),
+        ("POST", re.compile(r"/api/roster"), api_roster_save),
         ("GET", re.compile(r"/api/ntp"), api_ntp),
         ("POST", re.compile(r"/api/task"), api_task_start),
         ("POST", re.compile(r"/api/task/stop"), api_task_stop),

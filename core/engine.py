@@ -14,6 +14,7 @@ import uuid
 
 from .bili import (
     BiliError,
+    MAX_BUYERS,
     build_buyer_info,
     build_deliver_info,
     classify_error,
@@ -69,7 +70,8 @@ class Task:
             "screen_id": self.cfg.get("screen_id"),
             "sku_id": self.cfg.get("sku_id"),
             "count": self.cfg.get("count"),
-            "buyer_name": (self.cfg.get("buyer") or {}).get("name", ""),
+            "buyer_names": [b.get("name") or "" for b in (self.cfg.get("buyers") or [])],
+            "buyer_name": ((self.cfg.get("buyers") or [{}])[0].get("name") or ""),
         }
 
 
@@ -117,7 +119,20 @@ class Engine:
             raise ValueError("请选择场次")
         if not cfg.get("sku_id"):
             raise ValueError("请选择票档")
-        cfg["count"] = max(1, int(cfg.get("count") or 1))
+        buyers = cfg.get("buyers")
+        if isinstance(buyers, dict):
+            buyers = [buyers]
+        if not buyers:
+            legacy = cfg.get("buyer")
+            buyers = [legacy] if isinstance(legacy, dict) else []
+        buyers = [b for b in buyers if isinstance(b, dict)]
+        if not buyers:
+            raise ValueError("请至少选择一位观演人（从账号同步实名后勾选）")
+        if len(buyers) > MAX_BUYERS:
+            raise ValueError("单订单最多 %d 位观演人" % MAX_BUYERS)
+        cfg["buyers"] = buyers
+        # 每人 1 张，总数 = 选中人数；不再单独接受 count。
+        cfg["count"] = len(buyers)
         cfg.setdefault("concurrency", 2)
         cfg["concurrency"] = max(1, min(5, int(cfg["concurrency"])))
         cfg.setdefault("retry_ms", 120)
@@ -202,17 +217,19 @@ class Engine:
                 "-" if sku.get("stock") is None else sku.get("stock"),
             ))
 
-            buyer = cli.resolve_buyer(cfg["project_id"], cfg.get("buyer") or {})
-            if not buyer.get("personal_id") and not buyer.get("id"):
-                raise RuntimeError("实名信息不完整：需要身份证号（或从账号同步观演人）")
-            if not buyer.get("id"):
-                log("警告：该实名信息不在账号观演人列表中，下单可能被拒绝", "warn")
-            cfg["buyer"] = buyer
-            log("观演人：%s %s" % (buyer.get("name") or "-", buyer.get("personal_id", "")[-4:].rjust(4, "*")))
+            buyers = cli.resolve_buyers(cfg["project_id"], cfg.get("buyers") or [])
+            cfg["buyers"] = buyers
+            no_id = [str(i) for i, b in enumerate(buyers, 1) if not b.get("id")]
+            if no_id:
+                log("警告：第 %s 位观演人不在账号观演人列表中，下单可能被拒绝" % "、".join(no_id), "warn")
+            log("观演人（%d 位，每人 1 张）：%s" % (
+                len(buyers),
+                "；".join("%s %s" % (b.get("name") or "-", (b.get("personal_id") or "")[-4:]) for b in buyers),
+            ))
 
             ctx = {
-                "buyer_info": build_buyer_info(buyer),
-                "deliver_info": build_deliver_info(cfg, buyer),
+                "buyer_info": build_buyer_info(buyers),
+                "deliver_info": build_deliver_info(cfg, buyers[0]),
                 "price": price,
                 "sku": sku,
                 "project": norm,
@@ -358,9 +375,9 @@ class Engine:
         pid = cfg["project_id"]
         sid = cfg["screen_id"]
         sku_id = cfg["sku_id"]
-        count = cfg["count"]
-        price = ctx["price"]
         buyer_info = ctx["buyer_info"]
+        count = len(buyer_info)  # 每人 1 张；整单原子
+        price = ctx["price"]
         deliver_info = ctx["deliver_info"]
         extra = cfg.get("extra_fields") or {}
         retry_s = max(0, int(cfg.get("retry_ms", 120))) / 1000.0
