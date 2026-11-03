@@ -528,15 +528,19 @@ class BiliClient:
 
 def build_deliver_info(cfg: dict, buyer: dict) -> dict:
     mode = str(cfg.get("deliver") or "electronic")
+    name = cfg.get("addr_name") or buyer.get("name", "")
+    tel = cfg.get("addr_tel") or buyer.get("tel", "")
     if mode == "express":
         return {
-            "name": cfg.get("addr_name") or buyer.get("name", ""),
-            "tel": cfg.get("addr_tel") or buyer.get("tel", ""),
+            "name": name,
+            "tel": tel,
             "addr_id": _int(cfg.get("addr_id", 0)),
             "addr": cfg.get("addr", ""),
             "addr_detail": cfg.get("addr_detail", ""),
         }
-    return {"name": "", "tel": "", "addr_id": 0, "addr": "", "addr_detail": ""}
+    # 电子票也要联系人：B 站按项目要求 deliver_info.name / tel 必填，
+    # 空串会被拒（"本项目需要联系人信息，请填写姓名及手机号"）。
+    return {"name": name, "tel": tel, "addr_id": 0, "addr": "", "addr_detail": ""}
 
 
 MAX_BUYERS = 6

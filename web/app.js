@@ -415,7 +415,12 @@
       msgs.push('该票档限购 ' + sku.limit + ' 张，已选 ' + n + ' 人，下单可能被拒');
     }
     if (n > 1 && $('deliver') && $('deliver').value === 'express') {
-      msgs.push('邮寄收货人默认取第一位观演人，可在地址栏填写覆盖');
+      msgs.push('邮寄收货人用联系人信息，空则取第一位观演人');
+    }
+    const cn = $('contact-name') && $('contact-name').value.trim();
+    const ct = $('contact-tel') && $('contact-tel').value.trim();
+    if (!cn || !ct) {
+      msgs.push('请填写联系人姓名和手机号，否则下单会被 B 站拒绝');
     }
     box.textContent = msgs.length ? '提示：' + msgs.join('；') + '。' : '';
     box.className = msgs.length ? 'hint warn' : 'hint';
@@ -431,6 +436,8 @@
     $('buyer-name').value = b.name || '';
     $('buyer-tel').value = b.tel || '';
     $('buyer-id').value = b.personal_id || '';
+    if (!$('contact-name').value.trim() && b.name) $('contact-name').value = b.name;
+    if (!$('contact-tel').value.trim() && b.tel) $('contact-tel').value = b.tel;
   }
 
   /* ---------------- 模式 ---------------- */
@@ -481,12 +488,19 @@
     }
     if (buyers.length > MAX_BUYERS) throw new Error('一单最多 ' + MAX_BUYERS + ' 位观演人');
 
+    const cname = $('contact-name').value.trim();
+    const ctel = $('contact-tel').value.trim().replace(/[\s-]/g, '');
+    if (!cname) throw new Error('请填写联系人姓名（电子票也要）');
+    if (!/^1\d{10}$/.test(ctel)) throw new Error('联系人手机号需要 11 位手机号（电子票也要）');
+
     const cfg = {
       mode: STATE.mode,
       project_id: p.project_id,
       screen_id: Number(screenId) || 0,
       sku_id: Number(skuId),
       buyers,
+      addr_name: cname,
+      addr_tel: ctel,
       deliver: $('deliver').value,
       concurrency: Math.max(1, Math.min(5, Number($('opt-concurrency').value) || 2)),
       retry_ms: Math.max(0, Number($('opt-retry').value) || 0),
@@ -678,6 +692,10 @@
     $('url-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doParse(); });
 
     $('deliver').addEventListener('change', () => updateLimitHint(selectedBuyerIds().length));
+    ['contact-name', 'contact-tel'].forEach((id) => {
+      const n = $(id);
+      if (n) n.addEventListener('input', () => updateLimitHint(selectedBuyerIds().length));
+    });
 
     document.querySelectorAll('#mode-tabs button').forEach((b) => {
       b.onclick = () => switchMode(b.dataset.mode);

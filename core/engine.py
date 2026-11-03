@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -234,6 +235,16 @@ class Engine:
                 "sku": sku,
                 "project": norm,
             }
+            di = ctx["deliver_info"]
+            name = str(di.get("name") or "").strip()
+            tel = str(di.get("tel") or "").strip()
+            if not name:
+                raise RuntimeError("下单需要联系人信息：请填写联系人姓名（电子票也要）")
+            if "*" in tel:
+                raise RuntimeError("联系人手机号是打码的（%s），请在「联系人手机号」填真实号码" % tel)
+            if not re.fullmatch(r"1\d{10}", tel.replace("-", "").replace(" ", "")):
+                raise RuntimeError("联系人手机号格式不对：%s（需要 11 位手机号）" % (tel or "空"))
+            log("联系人：%s %s" % (name, tel))
 
             mode = cfg["mode"]
             if mode == "timed":
@@ -393,6 +404,13 @@ class Engine:
         lock = threading.Lock()
         order_lock = threading.Lock()
 
+        # 开抢前把实际会提交的字段打出来，接口再报"缺联系人"就能直接对照。
+        log("下单参数：count=%d deliver_info=%s buyer_info=%s" % (
+            count,
+            str(deliver_info),
+            "；".join("%s(id=%s)" % (b.get("name"), b.get("id")) for b in buyer_info),
+        ), "info")
+
         def worker(idx: int) -> None:
             while not task.stop_flag.is_set() and not winner.is_set() and not fatal.is_set():
                 if time.time() > deadline:
@@ -498,7 +516,7 @@ class Engine:
                     fatal.set()
                     return
                 if counters["fail"] <= 3 or counters["fail"] % 20 == 0:
-                    log("第 %d 次未成功：%s" % (counters["fail"], task.last_error), "warn")
+                    log("第 %d 次未成功：%s（返回 %s）" % (counters["fail"], task.last_error, str(res)[:300]), "warn")
                 time.sleep(retry_s)
 
         threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(concurrency)]
